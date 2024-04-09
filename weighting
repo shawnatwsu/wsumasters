@@ -1,0 +1,58 @@
+
+def earth_radius(lat):
+    """
+    Calculate the radius of Earth assuming oblate spheroid defined by WGS84.
+    """
+    a = 6378137  # semi-major axis in meters
+    b = 6356752.3142  # semi-minor axis in meters
+    e2 = 1 - (b**2 / a**2)  # square of eccentricity
+    
+    lat_rad = np.deg2rad(lat)  # convert from degrees to radians
+    lat_gc = np.arctan((1 - e2) * np.tan(lat_rad))  # convert from geodetic to geocentric
+    
+    r = (a * (1 - e2)**0.5) / (1 - (e2 * np.cos(lat_gc)**2))**0.5
+    return r
+
+def area_grid(lat, lon):
+    """
+    Calculate the area of each grid cell in square meters.
+    """
+    lon, lat = np.meshgrid(lon, lat)  # Meshgrid for unique lat-lon pairs
+    R = earth_radius(lat)
+    
+    dlat = np.deg2rad(np.gradient(lat, axis=0))
+    dlon = np.deg2rad(np.gradient(lon, axis=1))
+    
+    dy = dlat * R
+    dx = dlon * R * np.cos(np.deg2rad(lat))
+    
+    area = dy * dx  # Area calculation
+    return area
+
+# Unique latitudes and longitudes provided
+latitudes = np.array([25.91623037, 26.85863874, 27.80104712, 28.7434555, 29.68586387, 
+                      30.62827225, 31.57068063, 32.51308901, 33.45549738, 34.39790576, 
+                      35.34031414, 36.28272251, 37.22513089, 38.16753927, 39.10994764, 
+                      40.05235602, 40.9947644, 41.93717277, 42.87958115, 43.82198953, 
+                      44.76439791, 45.70680628, 46.64921466, 47.59162304, 48.53403141, 
+                      49.47643979])
+longitudes = np.array([235., 236.25, 237.5, 238.75, 240., 241.25, 242.5, 243.75, 245., 246.25,
+                       247.5, 248.75, 250., 251.25, 252.5, 253.75, 255., 256.25, 257.5, 258.75,
+                       260., 261.25, 262.5, 263.75, 265., 266.25, 267.5, 268.75, 270., 271.25,
+                       272.5, 273.75, 275., 276.25, 277.5, 278.75, 280., 281.25, 282.5, 283.75,
+                       285., 286.25, 287.5, 288.75, 290., 291.25, 292.5, 293.75, 295.])
+
+# Calculate the area of each grid cell
+area = area_grid(latitudes, longitudes)
+
+# Compute the total area of the domain
+total_area = np.sum(area)
+
+# Compute the weighted average area for each grid cell
+num_grid_cells = area.size
+average_area_per_cell = total_area / num_grid_cells
+
+print(f"Total area of the domain: {total_area} square meters")
+print(f"Average area per grid cell: {average_area_per_cell} square meters")
+normalized_areas = area / average_area_per_cell
+print(normalized_areas)
