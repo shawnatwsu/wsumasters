@@ -1,0 +1,194 @@
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import geopandas as gpd
+import regionmask
+import warnings
+warnings.filterwarnings('ignore')
+from scipy.stats import linregress
+from cftime import date2num
+
+# Define the functions for calculating earth radius and area grid
+def earth_radius(lat):
+    """
+    Calculate the radius of Earth assuming oblate spheroid defined by WGS84.
+    """
+    a = 6378137  # semi-major axis in meters
+    b = 6356752.3142  # semi-minor axis in meters
+    e2 = 1 - (b**2 / a**2)  # square of eccentricity
+    
+    lat_rad = np.deg2rad(lat)  # convert from degrees to radians
+    lat_gc = np.arctan((1 - e2) * np.tan(lat_rad))  # convert from geodetic to geocentric
+    
+    r = (a * (1 - e2)**0.5) / (1 - (e2 * np.cos(lat_gc)**2))**0.5
+    return r
+
+def area_grid(lat, lon):
+    """
+    Calculate the area of each grid cell in square meters.
+    """
+    lon, lat = np.meshgrid(lon, lat) 
+    R = earth_radius(lat)
+    
+    dlat = np.deg2rad(np.gradient(lat, axis=0))
+    dlon = np.deg2rad(np.gradient(lon, axis=1))
+    
+    dy = dlat * R
+    dx = dlon * R * np.cos(np.deg2rad(lat))
+    
+    area = dy * dx  # Area calculation
+    return area
+
+# Provided latitudes and longitudes
+latitudes = np.array([25.91623037, 26.85863874, 27.80104712, 28.7434555, 29.68586387, 
+                      30.62827225, 31.57068063, 32.51308901, 33.45549738, 34.39790576, 
+                      35.34031414, 36.28272251, 37.22513089, 38.16753927, 39.10994764, 
+                      40.05235602, 40.9947644, 41.93717277, 42.87958115, 43.82198953, 
+                      44.76439791, 45.70680628, 46.64921466, 47.59162304, 48.53403141, 
+                      49.47643979])
+longitudes = np.array([235., 236.25, 237.5, 238.75, 240., 241.25, 242.5, 243.75, 245., 246.25,
+                       247.5, 248.75, 250., 251.25, 252.5, 253.75, 255., 256.25, 257.5, 258.75,
+                       260., 261.25, 262.5, 263.75, 265., 266.25, 267.5, 268.75, 270., 271.25,
+                       272.5, 273.75, 275., 276.25, 277.5, 278.75, 280., 281.25, 282.5, 283.75,
+                       285., 286.25, 287.5, 288.75, 290., 291.25, 292.5, 293.75, 295.])
+
+# Calculate the area of each grid cell
+area = area_grid(latitudes, longitudes)
+
+# Compute the total area of the domain
+total_area = np.sum(area)
+
+# Compute the weighted average area for each grid cell
+num_grid_cells = area.size
+average_area_per_cell = total_area / num_grid_cells
+
+# Calculate the normalization factor for each cell relative to the average area
+normalized_areas = area / average_area_per_cell
+
+# Load the dataset
+data = xr.open_dataset('/home/shawn_preston/daysbelow0ensemble/cdd_trend_analysis.nc')
+print(data)
+# Load the shapefile containing region boundaries
+gdf = gpd.read_file('/home/shawn_preston/NCA/NCA_Regions.shp')
+
+# Filter for the Northwest region
+nw_sw_region = gdf[gdf['RegionName'].str.contains('Northwest|Southwest')]
+
+# Create mask with regionmask for the Northwest region
+lon_1d = data['lon'].values
+lat_1d = data['lat'].values
+mask = regionmask.mask_geopandas(nw_sw_region, lon_1d, lat_1d)
+land_mask = mask.notnull()
+
+# Apply mask to the ensemble trends 
+masked_trends = data['ensemble_trends'].where(land_mask, drop=True)
+
+# Reshape normalized_areas to match the spatial dimensions of masked_trends
+normalized_areas_reshaped = normalized_areas[:masked_trends.shape[1], :masked_trends.shape[2]].reshape(1, masked_trends.shape[1], masked_trends.shape[2])
+
+# Multiply ensemble trends by the normalized areas
+masked_trends_weighted = masked_trends * normalized_areas_reshaped # THIS IS WHERE THE AREA-WEIGHTED AVERAGE IS CALCULATED
+
+############
+nw_region = gdf[gdf['RegionName'].str.contains('Northwest')]
+
+# Create the mask with regionmask for the Northwest region
+lon_1d = data['lon'].values
+lat_1d = data['lat'].values
+mask = regionmask.mask_geopandas(nw_region, lon_1d, lat_1d)
+land_mask_nw = mask.notnull()
+
+# Apply the mask to the ensemble trends 
+masked_trends_nw = data['ensemble_trends'].where(land_mask_nw, drop=True)
+
+# Reshape normalized_areas to match the spatial dimensions of masked_trends
+normalized_areas_reshaped = normalized_areas[:masked_trends_nw.shape[1], :masked_trends_nw.shape[2]].reshape(1, masked_trends_nw.shape[1], masked_trends_nw.shape[2])
+
+# Multiply ensemble trends by the normalized areas
+masked_trends_weighted = masked_trends_nw * normalized_areas_reshaped
+#############
+# Calculate mean trends and GDD
+mean_ensemble_trends = masked_trends_nw.mean(dim=['lat', 'lon'])
+mean_gdd = data['ensemble_cdd_yearly'].where(land_mask_nw, drop=True).mean(dim='ensemble').mean(dim=['lat', 'lon'])
+
+# Identify max and min trend ensembles
+max_trend_ensemble_id = mean_ensemble_trends.argmax(dim='ensemble').item()
+min_trend_ensemble_id = mean_ensemble_trends.argmin(dim='ensemble').item()
+
+# Extracting time series for the max, min trend ensembles for the Northwest region
+yearly_max_trend = data['ensemble_cdd_yearly'].isel(ensemble=max_trend_ensemble_id).where(land_mask_nw, drop=True).mean(dim=['lat', 'lon'])
+yearly_min_trend = data['ensemble_cdd_yearly'].isel(ensemble=min_trend_ensemble_id).where(land_mask_nw, drop=True).mean(dim=['lat', 'lon'])
+
+years = data['year'].values
+
+# Calculate slope and intercept for trend lines
+max_trend_slope, max_trend_intercept = linregress(years, yearly_max_trend.values)[:2]
+min_trend_slope, min_trend_intercept = linregress(years, yearly_min_trend.values)[:2]
+
+
+# Rolling mean 
+window_size = 5
+smoothed_max_trend = yearly_max_trend.rolling(time=window_size, center=True).mean()
+smoothed_min_trend = yearly_min_trend.rolling(time=window_size, center=True).mean()
+smoothed_mean_gdd = mean_gdd.rolling(time=window_size, center=True).mean()
+
+# Plotting 
+fig = plt.figure(figsize=(18, 6))
+
+ax1 = fig.add_subplot(131)
+ax1.set_position([0.03, 0.1, 0.27, 0.8])  
+
+ax2 = fig.add_subplot(132, projection=ccrs.PlateCarree())
+ax2.set_position([0.31, 0.1, 0.31, 0.8]) 
+
+ax3 = fig.add_subplot(133, projection=ccrs.PlateCarree())
+ax3.set_position([0.63, 0.1, 0.31, 0.8]) 
+
+
+#  plot
+sns.lineplot(x=data['year'], y=smoothed_max_trend, label='Max Ensemble', color='red', ax=ax1)
+sns.lineplot(x=data['year'], y=smoothed_min_trend, label='Min Ensemble', color='blue', ax=ax1)
+sns.lineplot(x=data['year'], y=smoothed_mean_gdd, label='Mean GDD', color='black', ax=ax1)
+ax1.set_title('Yearly Trends')
+ax1.set_xlabel('Year')
+ax1.set_ylabel('Cold Degree Days')
+# Plot trend lines 
+ax1.plot(years, max_trend_slope * years + max_trend_intercept, label=f'Max Trend Line (Slope: {max_trend_slope:.2f})', color='red', linestyle='--')
+ax1.plot(years, min_trend_slope * years + min_trend_intercept, label=f'Min Trend Line (Slope: {min_trend_slope:.2f})', color='blue', linestyle='--')
+# Legend
+ax1.legend(loc='lower left')
+
+
+
+bounds = nw_sw_region.total_bounds
+north_extend = bounds[3] + 0.2  # Extend the north boundary
+x0, x1, y0, y1 = bounds[0], bounds[2]-8.88, bounds[1] + 10.6, north_extend
+
+# Colorbar levels
+levels = np.arange(-5, 6, 1)
+
+# Plot configurations
+for ax, ensemble_id, title in [(ax2, max_trend_ensemble_id, 'Max Trend'),
+                               (ax3, min_trend_ensemble_id, 'Min Trend')]:
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.STATES, linestyle=':')
+    plot = masked_trends.isel(ensemble=ensemble_id).plot(
+        ax=ax, transform=ccrs.PlateCarree(), cmap='RdBu', levels=levels,
+        add_colorbar=True, cbar_kwargs={'orientation': 'horizontal', 'pad': 0.05, 'ticks': levels, 'label': 'CDD/Yr'}
+    )
+    nw_sw_region.boundary.plot(ax=ax, edgecolor='black', linewidth=2, transform=ccrs.PlateCarree())
+    ax.set_title(f"{title} (Ensemble {ensemble_id})")
+    ax.set_extent([x0, x1, y0, y1], crs=ccrs.PlateCarree())  
+    gl = ax.gridlines(draw_labels=True, linestyle='--', color='gray', alpha=0.5)
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.xlabel_style = {'size': 12}
+    gl.ylabel_style = {'size': 12}
+fig.text(0.10, 0.05, 'A', fontsize=14,fontweight= 'bold', ha='left', va='bottom')
+plt.tight_layout()
+plt.suptitle('Maximum/Minimum Trends (1980-2064) of Cold Degree Days for PNW', fontsize = 16, fontweight = 'bold', y=1.04)
+plt.savefig('/home/shawn_preston/CESM2PAPERFIGURES/FIG5CDD.png',dpi = 300, bbox_inches = 'tight')
+plt.show()
